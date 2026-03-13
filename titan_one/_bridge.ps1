@@ -2,18 +2,23 @@
   _bridge.ps1 — 32-bit PowerShell bridge for titan_one Python package.
   Communicates via JSON lines on stdin/stdout.
 
+  IMPORTANT: gcapi_Write only persists for one device poll cycle.
+  We run a background thread that continuously writes the current output
+  state to the device every ~10ms. Commands just update the state buffer.
+
   Launched automatically by TitanOneController — not meant to be run directly.
 #>
 param([string]$DllPath)
 
 $ErrorActionPreference = "Stop"
 
-# ---------- Load DLL via P/Invoke ----------
+# ---------- Load DLL via P/Invoke + output loop helper ----------
 $escaped = $DllPath.Replace('\','\\')
 
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 public static class GCAPI
 {
@@ -36,6 +41,48 @@ public static class GCAPI
 
     [DllImport("$escaped", CallingConvention = CallingConvention.StdCall, EntryPoint = "gcdapi_DevicePID")]
     public static extern ushort DevicePID();
+}
+
+public static class OutputLoop
+{
+    private static sbyte[] _state = new sbyte[GCAPI.OUTPUT_TOTAL];
+    private static readonly object _lock = new object();
+    private static Thread _thread;
+    private static volatile bool _running;
+
+    public static void SetState(sbyte[] newState)
+    {
+        lock (_lock)
+        {
+            Array.Copy(newState, _state, GCAPI.OUTPUT_TOTAL);
+        }
+    }
+
+    public static void Start()
+    {
+        _running = true;
+        _thread = new Thread(() =>
+        {
+            sbyte[] buf = new sbyte[GCAPI.OUTPUT_TOTAL];
+            while (_running)
+            {
+                lock (_lock)
+                {
+                    Array.Copy(_state, buf, GCAPI.OUTPUT_TOTAL);
+                }
+                try { GCAPI.Write(buf); } catch {}
+                Thread.Sleep(8);  // ~120Hz write rate
+            }
+        });
+        _thread.IsBackground = true;
+        _thread.Start();
+    }
+
+    public static void Stop()
+    {
+        _running = false;
+        if (_thread != null) _thread.Join(1000);
+    }
 }
 "@
 
@@ -97,6 +144,9 @@ try {
                         continue
                     }
 
+                    # Start the continuous output loop
+                    [OutputLoop]::Start()
+
                     $fw = [GCAPI]::GetFWVer()
                     $dpid = [GCAPI]::DevicePID()
                     Send-Ok @{ firmware = [int]$fw; device_pid = "0x$($dpid.ToString('X4'))" }
@@ -107,6 +157,7 @@ try {
 
             "disconnect" {
                 try {
+                    [OutputLoop]::Stop()
                     if ($apiLoaded) {
                         [GCAPI]::Unload()
                         $apiLoaded = $false
@@ -118,7 +169,8 @@ try {
             }
 
             "write" {
-                # msg.values = object like {"19": 100, "18": 50}
+                # Update the shared state buffer. The background thread
+                # continuously writes it to the device.
                 try {
                     $output = New-Object sbyte[] ([GCAPI]::OUTPUT_TOTAL)
                     if ($msg.values) {
@@ -128,20 +180,18 @@ try {
                             $output[$idx] = $val
                         }
                     }
-                    $ok = [GCAPI]::Write($output)
-                    if ($ok) { Send-Ok } else { Send-Error "gcapi_Write returned 0" }
+                    [OutputLoop]::SetState($output)
+                    Send-Ok
                 } catch {
                     Send-Error "Write failed: $_"
                 }
             }
 
             "tap" {
-                # Atomic press+release: write the button frame, then immediately
-                # write all-zeros. Both DLL calls happen back-to-back with no
-                # overhead in between. $zeros is pre-allocated to minimize delay.
+                # Brief press: set state to pressed, sleep a few write cycles,
+                # then set state back to zeros.
                 try {
                     $output = New-Object sbyte[] ([GCAPI]::OUTPUT_TOTAL)
-                    $zeros  = New-Object sbyte[] ([GCAPI]::OUTPUT_TOTAL)
                     if ($msg.values) {
                         foreach ($prop in $msg.values.PSObject.Properties) {
                             $idx = [int]$prop.Name
@@ -149,8 +199,11 @@ try {
                             $output[$idx] = $val
                         }
                     }
-                    $null = [GCAPI]::Write($output)
-                    $null = [GCAPI]::Write($zeros)
+                    [OutputLoop]::SetState($output)
+                    # Hold for ~2 write cycles (~16ms) so the device sees it
+                    Start-Sleep -Milliseconds 20
+                    $zeros = New-Object sbyte[] ([GCAPI]::OUTPUT_TOTAL)
+                    [OutputLoop]::SetState($zeros)
                     Send-Ok
                 } catch {
                     Send-Error "Tap failed: $_"
@@ -171,6 +224,7 @@ try {
             }
 
             "quit" {
+                [OutputLoop]::Stop()
                 if ($apiLoaded) {
                     [GCAPI]::Unload()
                     $apiLoaded = $false
@@ -185,6 +239,7 @@ try {
         }
     }
 } finally {
+    try { [OutputLoop]::Stop() } catch {}
     if ($apiLoaded) {
         try { [GCAPI]::Unload() } catch {}
     }
