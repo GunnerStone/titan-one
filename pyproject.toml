@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "titan-one"
+version = "0.1.0"
+description = "Python package for controlling Nintendo Switch via Titan One adapter"
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+include = ["titan_one*"]
+
+[tool.setuptools.package-data]
+titan_one = ["_bridge.ps1"]
