@@ -135,6 +135,28 @@ try {
                 }
             }
 
+            "tap" {
+                # Atomic press+release: write the button frame, then immediately
+                # write all-zeros. Both DLL calls happen back-to-back with no
+                # overhead in between. $zeros is pre-allocated to minimize delay.
+                try {
+                    $output = New-Object sbyte[] ([GCAPI]::OUTPUT_TOTAL)
+                    $zeros  = New-Object sbyte[] ([GCAPI]::OUTPUT_TOTAL)
+                    if ($msg.values) {
+                        foreach ($prop in $msg.values.PSObject.Properties) {
+                            $idx = [int]$prop.Name
+                            $val = [sbyte]([math]::Max(-100, [math]::Min(100, [int]$prop.Value)))
+                            $output[$idx] = $val
+                        }
+                    }
+                    $null = [GCAPI]::Write($output)
+                    $null = [GCAPI]::Write($zeros)
+                    Send-Ok
+                } catch {
+                    Send-Error "Tap failed: $_"
+                }
+            }
+
             "is_connected" {
                 try {
                     $c = [GCAPI]::IsConnected()

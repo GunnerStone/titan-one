@@ -212,6 +212,22 @@ class TitanOneController:
         """Release every input (send all zeros)."""
         self._send({"cmd": "write", "values": {}})
 
+    def tap(
+        self,
+        *buttons: Union[SwitchButton, int, str],
+        value: int = 100,
+    ) -> None:
+        """Atomic press+release in a single bridge call.
+
+        The button is held for only microseconds — press and release
+        both happen on the bridge side with no Python round-trip between them.
+        """
+        resolved: Dict[str, int] = {}
+        for btn in buttons:
+            idx = self._resolve_button(btn)
+            resolved[str(idx)] = max(0, min(100, int(value)))
+        self._send({"cmd": "tap", "values": resolved})
+
     def tilt_stick(
         self,
         axis: Union[SwitchButton, int, str],
