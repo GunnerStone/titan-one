@@ -1,5 +1,7 @@
 # titan_one
 
+This was all vibe coded us at your own risk. 
+
 Python package for controlling **Nintendo Switch** via a **Titan One** USB adapter.
 
 Works from any Python (32- or 64-bit) — the package automatically bridges to the 32-bit `gcdapi.dll` using a lightweight PowerShell subprocess.
